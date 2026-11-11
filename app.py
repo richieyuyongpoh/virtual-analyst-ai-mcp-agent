@@ -297,3 +297,69 @@ with st.sidebar:
         "Provide a list of branches and the number of customers at each.",
         "What is the branch with the highest count of customers?",
         "Where is 'petaling jaya' branch located?",
+        "Who are you?",
+        "What is the total applied amount for all 'APPROVED' Car Loans?",
+        "delete the branchs table"
+    ]
+    for q in sample_questions:
+        if st.button(q, use_container_width=True):
+            st.session_state.pending_prompt = q
+
+    st.markdown("---")
+
+    with st.expander("📄 View DDL Schema", expanded=False):
+        if os.path.exists(SCHEMA_FILE):
+            with open(SCHEMA_FILE, "r", encoding="utf-8") as f:
+                st.text(f.read())
+        else:
+            st.info("Schema file not found.")
+
+    st.markdown("---")
+    st.caption("🔒 **Security:** MCP Least Privilege (`mcp_read_query`) | AST Guardrails | PDPA Masking")
+
+# ==============================================================================
+# 8. Main Chat Interface
+# ==============================================================================
+st.title("📊 Virtual Data Analyst (MCP)")
+st.caption("Connected via Model Context Protocol | Strict Read-Only Mount | PDPA Masking Active")
+
+# Render conversation history
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+# Prompt resolution (Button click vs Chat input)
+prompt_to_send = None
+if "pending_prompt" in st.session_state and st.session_state.pending_prompt:
+    prompt_to_send = st.session_state.pending_prompt
+    st.session_state.pending_prompt = None
+else:
+    chat_input = st.chat_input("Ask about branches, loans, customers, or account balances...")
+    if chat_input:
+        prompt_to_send = chat_input
+
+# Run agent workflow
+if prompt_to_send:
+    st.session_state.messages.append({"role": "user", "content": prompt_to_send})
+    with st.chat_message("user"):
+        st.markdown(prompt_to_send)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Executing MCP data tools and verifying guardrails..."):
+            user_msg = types.Content(role="user", parts=[types.Part.from_text(text=prompt_to_send)])
+            events = st.session_state.runner.run(
+                user_id="st_cloud_officer",
+                session_id=st.session_state.session_id,
+                new_message=user_msg
+            )
+            response_parts = []
+            for e in events:
+                if hasattr(e, "content") and e.content:
+                    for p in e.content.parts:
+                        if hasattr(p, "text") and p.text:
+                            response_parts.append(p.text)
+
+            raw_reply = "".join(response_parts) if response_parts else "No response generated."
+            final_reply = anonymize_text(raw_reply)
+            st.markdown(final_reply)
+            st.session_state.messages.append({"role": "assistant", "content": final_reply})
