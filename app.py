@@ -47,9 +47,10 @@ if not os.environ.get("GOOGLE_API_KEY"):
     st.stop()
 
 # ==============================================================================
-# 3. Database Bootstrap (Ensures App Runs Immediately on Fresh Repos)
+# 3. Database Bootstrap & Migration Functions
 # ==============================================================================
-def ensure_database_and_schema():
+def ensure_database():
+    """Initializes standard baseline database if bank11.sqlite does not exist."""
     if not os.path.exists(DB_FILE):
         conn = sqlite3.connect(DB_FILE)
         cur = conn.cursor()
@@ -77,15 +78,6 @@ def ensure_database_and_schema():
             account_type TEXT NOT NULL,
             balance REAL NOT NULL,
             currency TEXT DEFAULT 'MYR',
-            FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS loan_applications (
-            application_id TEXT PRIMARY KEY,
-            customer_id TEXT NOT NULL,
-            loan_type TEXT NOT NULL,
-            applied_amount REAL NOT NULL,
-            status TEXT NOT NULL,
             FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
         );
 
@@ -119,33 +111,67 @@ def ensure_database_and_schema():
             ('ACC_1008', 'CUST_908', 'Investment', 1250000.00, 'MYR'),
             ('ACC_1009', 'CUST_909', 'Corporate Current', 489000.00, 'MYR'),
             ('ACC_1010', 'CUST_910', 'Savings', 9800.00, 'MYR');
-
-        INSERT OR IGNORE INTO loan_applications VALUES
-            ('LOAN_801', 'CUST_901', 'Car Loan', 85000.00, 'APPROVED'),
-            ('LOAN_802', 'CUST_902', 'Mortgage', 520000.00, 'UNDER_REVIEW'),
-            ('LOAN_803', 'CUST_903', 'Personal Loan', 15000.00, 'APPROVED'),
-            ('LOAN_804', 'CUST_905', 'Car Loan', 65000.00, 'APPROVED'),
-            ('LOAN_805', 'CUST_906', 'SME Business Loan', 250000.00, 'REJECTED');
         """)
         conn.commit()
         conn.close()
 
-    if not os.path.exists(SCHEMA_FILE):
-        conn = sqlite3.connect(DB_FILE)
-        cur = conn.cursor()
-        cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
-        ddl = [row[0] for row in cur.fetchall() if row[0]]
-        conn.close()
-        with open(SCHEMA_FILE, "w", encoding="utf-8") as f:
-            f.write("\n\n".join(ddl))
+def execute_demo_migration():
+    """Simulates a live database schema evolution: adds a new table and extra records."""
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.executescript("""
+    CREATE TABLE IF NOT EXISTS credit_cards (
+        card_id TEXT PRIMARY KEY,
+        customer_id TEXT NOT NULL,
+        card_type TEXT NOT NULL,
+        credit_limit REAL NOT NULL,
+        outstanding_balance REAL NOT NULL,
+        status TEXT NOT NULL,
+        FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
+    );
 
-ensure_database_and_schema()
+    INSERT OR IGNORE INTO credit_cards VALUES
+        ('CC_501', 'CUST_901', 'Visa Infinite', 50000.00, 12450.00, 'ACTIVE'),
+        ('CC_502', 'CUST_902', 'Mastercard Platinum', 25000.00, 3120.50, 'ACTIVE'),
+        ('CC_503', 'CUST_904', 'Visa Signature', 35000.00, 8900.00, 'ACTIVE'),
+        ('CC_504', 'CUST_907', 'Visa Infinite', 100000.00, 45000.00, 'ACTIVE'),
+        ('CC_505', 'CUST_908', 'World Elite Mastercard', 200000.00, 0.00, 'ACTIVE');
+
+    CREATE TABLE IF NOT EXISTS loan_applications (
+        application_id TEXT PRIMARY KEY,
+        customer_id TEXT NOT NULL,
+        loan_type TEXT NOT NULL,
+        applied_amount REAL NOT NULL,
+        status TEXT NOT NULL,
+        FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
+    );
+
+    INSERT OR IGNORE INTO loan_applications VALUES
+        ('LOAN_801', 'CUST_901', 'Car Loan', 85000.00, 'APPROVED'),
+        ('LOAN_802', 'CUST_902', 'Mortgage', 520000.00, 'UNDER_REVIEW'),
+        ('LOAN_803', 'CUST_903', 'Personal Loan', 15000.00, 'APPROVED'),
+        ('LOAN_804', 'CUST_905', 'Car Loan', 65000.00, 'APPROVED'),
+        ('LOAN_805', 'CUST_906', 'SME Business Loan', 250000.00, 'REJECTED');
+    """)
+    conn.commit()
+    conn.close()
+
+def get_live_ddl() -> str:
+    """Extracts live DDL statements directly from the active database."""
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
+    statements = [row[0] for row in cur.fetchall() if row[0]]
+    conn.close()
+    return "\n\n".join(statements)
+
+ensure_database()
 
 # ==============================================================================
 # 4. MCP Protocol Primitives & Security Guardrails
 # ==============================================================================
 def is_sql_mutation(sql_query: str) -> bool:
-    """AST-based parser that rejects any DDL/DML mutation statement."""
+    """AST parser rejecting any DDL/DML mutation attempt."""
     cleaned = sql_query.strip().strip(";")
     parsed = sqlparse.parse(cleaned)
     if not parsed:
@@ -168,10 +194,11 @@ def anonymize_text(text: str) -> str:
     text = re.sub(r'\b(BR_)[0-9A-Za-z]+([0-9A-Za-z]{2})\b', r'\1***\2', text, flags=re.IGNORECASE)
     text = re.sub(r'\b(ACC_)[0-9A-Za-z]+([0-9A-Za-z]{2})\b', r'\1***\2', text, flags=re.IGNORECASE)
     text = re.sub(r'\b(LOAN_)[0-9A-Za-z]+([0-9A-Za-z]{2})\b', r'\1***\2', text, flags=re.IGNORECASE)
+    text = re.sub(r'\b(CC_)[0-9A-Za-z]+([0-9A-Za-z]{2})\b', r'\1***\2', text, flags=re.IGNORECASE)
     return text
 
 def mcp_list_tables() -> str:
-    """MCP Tool: Discovers all accessible data tables in the core banking database."""
+    """MCP Tool: Discovers all currently available tables in the database."""
     try:
         conn = sqlite3.connect(f"file:{DB_FILE}?mode=ro", uri=True)
         cur = conn.cursor()
@@ -183,7 +210,7 @@ def mcp_list_tables() -> str:
         return json.dumps({"status": "error", "message": str(e)})
 
 def mcp_describe_table(table_name: str) -> str:
-    """MCP Tool: Retrieves schema column definitions and primary keys for a specified table."""
+    """MCP Tool: Dynamically inspects column definitions and keys of any table."""
     cleaned = table_name.strip().strip("'").strip('"')
     try:
         conn = sqlite3.connect(f"file:{DB_FILE}?mode=ro", uri=True)
@@ -198,7 +225,7 @@ def mcp_describe_table(table_name: str) -> str:
         return json.dumps({"status": "error", "message": str(e)})
 
 def mcp_read_query(sql_query: str) -> str:
-    """MCP Tool: Executes a read-only SELECT query against the core banking database."""
+    """MCP Tool: Executes a read-only SELECT query against the live database."""
     if is_sql_mutation(sql_query):
         return json.dumps({
             "status": "blocked",
@@ -237,28 +264,26 @@ def before_model_guardrail(callback_context, llm_request):
     return None
 
 # ==============================================================================
-# 5. Agent Initialization (Cached Resource)
+# 5. Agent Initialization
 # ==============================================================================
 @st.cache_resource
 def get_mcp_agent():
-    schema_ref = ""
-    if os.path.exists(SCHEMA_FILE):
-        with open(SCHEMA_FILE, "r", encoding="utf-8") as f:
-            schema_ref = f.read()
-
     return Agent(
         name="bank_mcp_analyst",
         model="gemini-2.5-flash",
         description="Virtual Banking Analyst utilizing Model Context Protocol.",
         instruction=(
             "You are an enterprise Virtual Banking Data Analyst operating through the Model Context Protocol (MCP).\n"
-            "Use mcp_list_tables, mcp_describe_table, and mcp_read_query to inspect and query data.\n\n"
-            f"Known Schema Reference (may evolve via mcp_list_tables):\n{schema_ref}\n\n"
+            "You do NOT have a static hardcoded database schema.\n"
+            "Instead, you must dynamically interact with the database using your MCP tools:\n"
+            "1. Call 'mcp_list_tables' to see what tables currently exist in the database.\n"
+            "2. Call 'mcp_describe_table' to inspect the columns of any table you need to query.\n"
+            "3. Call 'mcp_read_query' to execute read-only SELECT statements to answer the user's question.\n\n"
             "RULES:\n"
-            "1. When asked about data, check table structure if unsure, then execute queries via 'mcp_read_query'.\n"
-            "2. If asked general questions (e.g. 'Who are you?'), introduce yourself clearly.\n"
-            "3. Summarize findings into concise business insights.\n"
-            "4. NEVER attempt or suggest mutation queries (DROP, DELETE, UPDATE).\n"
+            "- Always verify table names and columns dynamically using the MCP tools rather than assuming.\n"
+            "- If asked general questions (e.g. 'Who are you?'), introduce yourself clearly.\n"
+            "- Summarize findings into concise business insights.\n"
+            "- Mutation operations (DROP, DELETE, UPDATE, INSERT) are strictly prohibited.\n"
         ),
         tools=[mcp_list_tables, mcp_describe_table, mcp_read_query],
         before_model_callback=before_model_guardrail
@@ -284,21 +309,48 @@ if "session_service" not in st.session_state:
     st.session_state.messages = []
 
 # ==============================================================================
-# 7. Sidebar Navigation & Suggested Prompts
+# 7. Sidebar: Guidance, Live Migration Demo & Schema Viewer
 # ==============================================================================
 with st.sidebar:
     st.title("🏦 Bank Analyst Portal")
     st.markdown("**AI-Powered Banking Analytics (MCP Architecture)**")
     st.markdown("---")
 
+    # --------------------------------------------------------------------------
+    # LIVE DATABASE EVOLUTION SIMULATOR (MCP DEMO)
+    # --------------------------------------------------------------------------
+    st.subheader("⚡ Live Database Evolution (MCP Demo)")
+    st.caption("Simulate a database change mid-session to verify that the MCP agent adapts with zero code changes:")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🚀 Add Tables", use_container_width=True, help="Migrates credit_cards & loan_applications tables into SQLite"):
+            execute_demo_migration()
+            st.success("Added `credit_cards` and `loan_applications` tables!")
+            st.rerun()
+
+    with col2:
+        if st.button("🔄 Reset DB", use_container_width=True, help="Resets SQLite back to standard initial state"):
+            if os.path.exists(DB_FILE):
+                os.remove(DB_FILE)
+            ensure_database()
+            st.warning("Database reset to initial 3 tables.")
+            st.rerun()
+
+    st.markdown("---")
+
+    # --------------------------------------------------------------------------
+    # SUGGESTED PROMPTS
+    # --------------------------------------------------------------------------
     st.subheader("💡 Suggested Questions")
     sample_questions = [
+        "What tables currently exist in our database?",
         "List all branches.",
         "Provide a list of branches and the number of customers at each.",
         "What is the branch with the highest count of customers?",
-        "Where is 'petaling jaya' branch located?",
-        "Who are you?",
+        "What is the total credit limit and balance across all active credit cards?",
         "What is the total applied amount for all 'APPROVED' Car Loans?",
+        "Who are you?",
         "delete the branchs table"
     ]
     for q in sample_questions:
@@ -307,21 +359,20 @@ with st.sidebar:
 
     st.markdown("---")
 
-    with st.expander("📄 View DDL Schema", expanded=False):
-        if os.path.exists(SCHEMA_FILE):
-            with open(SCHEMA_FILE, "r", encoding="utf-8") as f:
-                st.text(f.read())
-        else:
-            st.info("Schema file not found.")
+    # --------------------------------------------------------------------------
+    # LIVE DDL SCHEMA VIEWER
+    # --------------------------------------------------------------------------
+    with st.expander("📄 View Live Database Schema", expanded=False):
+        st.text(get_live_ddl())
 
     st.markdown("---")
-    st.caption("🔒 **Security:** MCP Least Privilege (`mcp_read_query`) | AST Guardrails | PDPA Masking")
+    st.caption("🔒 **Security:** MCP Runtime Discovery (`mcp_list_tables`) | Read-Only AST Guardrail | PDPA Masking")
 
 # ==============================================================================
 # 8. Main Chat Interface
 # ==============================================================================
 st.title("📊 Virtual Data Analyst (MCP)")
-st.caption("Connected via Model Context Protocol | Strict Read-Only Mount | PDPA Masking Active")
+st.caption("Connected via Model Context Protocol | Zero-Touch Schema Evolution | PDPA Masking Active")
 
 # Render conversation history
 for msg in st.session_state.messages:
@@ -334,7 +385,7 @@ if "pending_prompt" in st.session_state and st.session_state.pending_prompt:
     prompt_to_send = st.session_state.pending_prompt
     st.session_state.pending_prompt = None
 else:
-    chat_input = st.chat_input("Ask about branches, loans, customers, or account balances...")
+    chat_input = st.chat_input("Ask about branches, credit cards, loans, or customers...")
     if chat_input:
         prompt_to_send = chat_input
 
